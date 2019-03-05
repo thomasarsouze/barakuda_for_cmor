@@ -1,0 +1,8 @@
+
+NCDF_DIR = /software/apps/netcdf/4.3.2/i1214-hdf5-1.8.12-AVX-off
+
+NCDF= -I$(NCDF_DIR)/include -L$(NCDF_DIR)/lib -lnetcdf -lnetcdff
+
+F90=ifort
+
+FFLAGS= -O3 -xHOST -CB -traceback -fpe0  -module ./mod $(NCDF)

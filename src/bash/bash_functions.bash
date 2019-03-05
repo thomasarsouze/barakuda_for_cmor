@@ -1,0 +1,740 @@
+#!/usr/bin/env bash
+
+# simple util function to check if dir exist and has files
+not_empty_dir () {
+    [[ ! -d "$1" ]] && return 1
+    [ -n "$(ls -A $1)" ] && return 0 || return 1
+}
+
+
+function barakuda_usage()
+{
+    echo
+    echo "USAGE: ${0} -C <config> -R <experiment>  (options)"
+    echo
+    echo "     Available configs are:"
+    for cc in ${list_conf}; do
+        echo "         * ${cc}"
+    done
+    echo
+    echo
+    echo "   OPTIONS:"
+    echo
+    echo "      -f <years> => how many years per NEMO file? default = 1"
+    echo
+    echo "      -y <YYYY> => force initial year to YYYY"
+    echo
+    echo "      -F        => forces creation of diagnostic page even if treatment of output files is not finished"
+    echo
+    echo "      -e        => create the HTML diagnostics page on local or remote server"
+    echo
+    echo "      -E        => same as '-e' but also create the 2D plots / observations"
+    echo "                   you need to have built a climatology of your experiment with 'build_clim.sh' first!"
+    echo
+    echo "      -c <exp>  => when '-E' specified, 2D comparison diagnostics are performed "
+    echo "                   against the climatology of another experiment <exp> rather than observations"
+    echo
+    echo "      -h        => print this message"
+    echo
+}
+
+
+function barakuda_init()
+{
+    # Some defaults (don't modify, they should be modified according to what's in your config_<CONFIG>.sh file...)      
+    export GRID_TYPE="gn"
+    export CMOR=0
+    export NCHNKS_Y=1
+    export Y_INI_EC="1990" ; # initial year                                                                             
+    export M_INI_EC="01"   ; # initial month                                                                            
+    export cmmdd1="0101"
+    export cmmdd2="1231"
+    export l_y2_j=false    ; # if 1-year long NEMO files end sometime in year+1 instead of year!
+    
+    # Supported ORCA grids:
+    export ORCA_LIST="ORCA025.L75 ORCA1.L75 ORCA1.L46 ORCA1.L42 ORCA2.L31"
+
+    # Some defaults:
+    export LFORCE_YINI=false
+    export LFORCE_YEND=false
+    export EXPREF=""
+    export ISTAGE=1 ; # 1 => generation of data diagnostic files
+    #          # 2 => creation of figures and diagnostic HTML page
+    export LFORCEDIAG=false
+    export l_clim_diag=false
+    export IFREQ_SAV_YEARS=1
+    #
+    if [ ! "`which ncdump 2>/dev/null`" = "" ]; then
+        export NCDUMP="ncdump"
+    elif [ -f ${NCDF_DIR}/bin/ncdump ]; then
+        export NCDUMP="${NCDF_DIR}/bin/ncdump"
+    else
+        echo "ERROR: cannot find command 'ncdump' on your system..."; exit
+    fi
+    #
+}
+
+function barakuda_check()
+{
+    #script=`basename $0 | sed -e s/'.sh'/''/g` ; # Job managers screw this!!!
+    if [ -z ${CONFIG} ] || [ -z ${EXP} ]; then ${script}_usage ; exit ; fi
+
+    if [ "${EXPREF}" != "" ] && [ ${ISTAGE} -eq 1 ]; then
+        echo; echo " WARNING: option '-c' only makes sense when '-e' or '-E' are specified !"
+        sleep 2; echo
+    fi
+
+    for og in ${ORCA_LIST}; do
+        ORCA_CONF="`echo ${CONFIG} | cut -d '_' -f1`.`echo ${CONFIG} | cut -d '_' -f2`"
+        #echo " ${og} / ${ORCA_CONF}"
+        ca=""; ca=`echo ${ORCA_CONF} | grep ${og}`
+        if [ "${ca}" != "" ]; then export ORCA=${og}; fi
+    done
+
+    if [ -z ${ORCA} ]; then echo "ORCA grid of config ${CONFIG} not supported yet"; exit; fi
+    echo
+
+    if [ "${script}" = "build_clim" ]; then
+        echo Boo
+        if [ -z ${Y1} ] || [ -z ${Y2} ]; then
+            ${script}_usage
+            echo; echo " ==> Please specify both first and last year for climatology (-i and -e ) !!!"; echo
+            exit
+        fi
+    fi
+}
+
+
+function barakuda_setup()
+{
+    #script=`basename $0 | sed -e s/'.sh'/''/g` ; # Job managers screw this!!!
+    echo
+    if [ ! "${ORCA}" = "${CONF}" ]; then echo "ERROR: ORCA and CONF disagree! => ${ORCA} ${CONF}"; exit; fi
+    export ORCA=${CONF}
+    echo
+
+    if [ -z ${PYTHON_HOME} ]; then echo "ERROR: PYTHON_HOME is not set! => add it to config file"; exit; fi
+    export PYTH="${PYTHON_HOME}/bin/python -W ignore" ; # which Python installation to use
+    export PYTHONPATH=${PYTHON_HOME}/lib/python2.7/site-packages:${BARAKUDA_ROOT}/python/modules ; # PATH to python barakuda modules
+    export PYBRKD_EXEC_PATH=${BARAKUDA_ROOT}/python/exec         ; # PATH to python barakuda executable
+
+    echo " PYTHON_HOME => "${PYTHON_HOME} ; echo
+    echo "  TRANSPORT_SECTION_FILE => ${TRANSPORT_SECTION_FILE} !" ; echo
+
+    if ${l_clim_diag} ; then
+        echo
+        echo " Files containing climatologies to be used:"
+        echo " T 3D => ${F_T_OBS_3D_12} => ${NN_T_OBS}"
+        echo " S 3D => ${F_S_OBS_3D_12} => ${NN_S_OBS}"
+        echo " SST  => ${F_SST_OBS_12} => ${NN_SST_OBS}"
+        echo
+        for ff in ${F_T_OBS_3D_12} ${F_S_OBS_3D_12} ${F_SST_OBS_12}; do
+            if [ ! -f ${F_T_OBS_3D_12} ]; then echo "ERROR: ${ff} is missing!"; exit; fi
+        done
+    fi
+
+    # Names for temperature, salinity, u- and v-current...
+    if [ -z ${NN_T} ] || [ -z ${NN_S} ] || [ -z ${NN_U} ] || [ -z ${NN_V} ]; then
+        echo "NN_T, NN_S, NN_U and NN_V are NOT given a value into"
+        echo " in ${fconfig} "
+        echo "  => using default names: thetao, so, uo, vo" ; echo
+        NN_T="thetao"; NN_S="so"; NN_U="uo"; NN_V="vo"
+    fi
+
+    echo ; echo " *** NN_T=${NN_T}, NN_S=${NN_S}, NN_U=${NN_U} and NN_V=${NN_V} "; echo
+
+    # Checking what files we have / plan to use:
+    if [ -z "${NEMO_SAVED_FILES}" ]; then
+        echo "Please specify which NEMO files are saved (file suffixes, grid_T, ..., icemod) ?"
+        echo " => set the variable NEMO_SAVED_FILES in your config_${CONFIG}.sh file!"; exit
+    fi
+    echo; echo "File types to import (NEMO_SAVED_FILES) : ${NEMO_SAVED_FILES}"; echo; echo
+
+    # Need to be consistent with the netcdf installation upon which cdftools_light was compiled:
+    ff="${BARAKUDA_ROOT}/cdftools_light/make.macro"
+    if [ ! -f ${ff} ]; then echo "PROBLEM: cannot find ${ff} (needed to get NCDF_DIR)!"; exit; fi
+    export NCDF_DIR=`cat ${ff} | grep ^NCDF_DIR | cut -d = -f2 | sed -e s/' '//g`
+    echo ; echo "NCDF_DIR = ${NCDF_DIR}"; echo
+    export LD_LIBRARY_PATH=${NCDF_DIR}/lib:${LD_LIBRARY_PATH}
+
+    # Exporting some variables needed by the python scripts:
+    export EXP=${EXP}
+    export CONFEXP=${ORCA}-${EXP}
+    export DIAG_D=${DIAG_DIR}/${CONFEXP}
+    export CLIM_DIR=${DIAG_D}/clim
+    
+    if [ ${ISTAGE} -eq 1 ] || [ ! -z "${SLURM_JOBID}" ]; then
+        # We need a scratch/temporary directory to copy these files to and gunzip them:
+        # Normal case, inside a batch job scheduler:
+        if [ ! -z "${SLURM_JOBID}" ]; then
+            # NSC / Sweden ; Gustafson / BSC
+            SCRATCH=`echo ${SCRATCH} | sed -e "s|<JOB_ID>|${SLURM_JOBID}|g"`
+            export TMP_DIR=${SCRATCH}/tmp_${EXP}_${script}
+            #
+        elif [ ! -z "${LSB_JOBID}" ]; then
+            # MARENOSTRUM / BSC
+            export TMP_DIR=${TMPDIR}
+        else
+            # Default:
+            export TMP_DIR=${SCRATCH}/tmp_${EXP}_${script}
+        fi
+    else
+        export TMP_DIR=${SCRATCH}/html_${EXP}_tmp
+    fi
+    echo " IMPORTANT the TMP_DIR work directory is set to:" ; echo " ${TMP_DIR}"; echo ; sleep 2
+    
+    if [ -d ${TMP_DIR} ] && $(ls ${TMP_DIR}/* >& /dev/null); then
+        echo "ERROR! TMP_DIR already exists and is not empty!"
+        echo "    => ${TMP_DIR}"
+##TA        exit
+    fi
+    
+    mkdir -p ${DIAG_D} ${TMP_DIR}
+    
+    export NEMO_OUT_D=`echo ${NEMO_OUT_STRCT} | sed -e "s|<ORCA>|${ORCA}|g" -e "s|<EXP>|${EXP}|g" -e "s|<Y_INI_EC>|${Y_INI_EC}|g" -e "s|<M_INI_EC>|${M_INI_EC}|g"`
+    if [ ! -d ${NEMO_OUT_D} ]; then echo "Unfortunately we could not find ${NEMO_OUT_D}"; exit; fi
+    
+    # Where to look for NEMO namelists:
+    if [ ${ece_exp} -eq 0 ]; then
+        # NEMO standalone:
+        export NAMELIST_DIR=${NEMO_OUT_D}
+    elif [ ${ece_exp} -gt 0 ] && [ ${ece_exp} -lt 10 ]; then
+        # EC-Earth classic mode:
+        export NAMELIST_DIR=`echo ${NEMO_OUT_D} | sed -e "s|/output/nemo||g"`
+    else
+        # EC-Earth autosubmit mode TO FIX! :
+        echo; echo " WARNING ('barakuda_setup' of bash_functions.bash): don't know where to look for NEMO namelists!"
+    fi
+    echo; echo " *** NAMELIST_DIR = ${NAMELIST_DIR} "; echo
+    
+
+    echo; echo " * Config to be used: ${CONFIG} => ORCA grid is ${ORCA}"
+    echo " * Experiment is ${EXP} "; echo " * Files are stored into ${NEMO_OUT_D}"; echo; sleep 2
+
+    export CPREF=`echo ${NEMO_FILE_PREFIX} | sed -e "s|<ORCA>|${ORCA}|g" -e "s|<EXP>|${EXP}|g" -e "s|<TSTAMP>|${TSTAMP}|g"`
+    echo " NEMO files prefix = ${CPREF} "
+
+    # only neede for barakuda.sh :
+    if [ "${script}" = "barakuda" ]; then
+        # Testing if NCO is installed:
+        which ncks 1>out 2>/dev/null; ca=`cat out`; rm -f out
+        if [ "${ca}" = "" ]; then echo "Install NCO!!!"; echo; exit; fi        
+        if [ ${ISTAGE} -eq 1 ]; then
+            for ex in ${L_EXEC}; do check_if_file ${BARAKUDA_ROOT}/cdftools_light/bin/${ex} "Compile CDFTOOLS executables!"; done
+        fi
+    fi
+    
+    echo "${NEMO_OUT_D}" > ${DIAG_D}/NEMO_output_location.info
+
+    if [ -z ${NCDF_DIR} ]; then
+        if [ ! -z ${NETCDF_DIR} ]; then
+            export NCDF_DIR=${NETCDF_DIR}
+        elif [ ! -z ${NETCDF_HOME} ]; then
+            export NCDF_DIR=${NETCDF_HOME}
+        else
+            echo "ERROR: NCDF_DIR could not be determined, please specify it in your config file!"
+            exit
+        fi
+    fi
+    echo
+}
+
+function barakuda_first_last_years()
+{
+    YEAR_INI=
+
+    cd ${NEMO_OUT_D}/
+    if [ ${ece_exp} -gt 0 ]; then
+        if [ ! -d 001 ]; then
+            echo " *** Inside: `pwd` !"; \ls -l ; echo
+            echo "ERROR: since ece_exp=${ece_exp}, there should be a directory 001 in:"; echo " ${NEMO_OUT_D}"; echo; exit
+        fi
+        nby_ece=`ls -d ???/ |  grep "[^0-9]" | wc -l`
+        echo " ${nby_ece} years have been completed..."
+
+        if not_empty_dir 001
+        then
+            cd 001/
+        else
+            # fall back on user config (case of ouput having been backup)
+            YEAR_INI=${Y_INI_EC}
+        fi
+    fi
+
+    # Try to guess the first year from stored "grid_T" files:
+    [[ -z $YEAR_INI ]] && \
+        YEAR_INI=`\ls ${CPREF}*${ctest}* | sed -e s/"${CPREF}"/""/g | head -1 | cut -c1-4`
+    if [[ ! ${YEAR_INI} =~ ^[0-9]+$ ]]   # Checking if it's an integer
+    then
+        echo "ERROR: it was imposible to guess initial year from your input files"
+        echo "       maybe the directory contains non-related files..."
+        exit 1
+    fi
+    export YEAR_INI=$((${YEAR_INI}+0))  ; # example: 1 instead of 0001...
+    export YEAR_INI_F=${YEAR_INI} ; # saving the year deduced from first file
+        
+
+    if ${LFORCE_YINI}; then
+        if [ ${YEAR0} -lt ${YEAR_INI_F} ]; then echo "ERROR: forced initial year is before first year!"; exit; fi
+        export YEAR_INI=${YEAR0}
+        echo " Initial year forced to ${YEAR_INI} !"
+    fi
+
+    cd ${NEMO_OUT_D}/
+
+    if [ ${ece_exp} -gt 0 ]; then
+        dir_end=`printf "%03d" ${nby_ece}`
+        if [ ! -d ${dir_end} ]; then echo "ERROR: since ece_exp=${ece_exp}, there should be a directory ${dir_end} in:"; echo " ${NEMO_OUT_D}"; exit ; fi
+        export YEAR_END=$((${YEAR_INI}+${nby_ece}))
+    else
+        export YEAR_END=`\ls ${CPREF}*${ctest}* | sed -e s/"${CPREF}"/''/g | tail -1 | cut -c1-4`
+        if [[ ! ${YEAR_END} =~ ^[0-9]+$ ]]   # Checking if it's an integer
+        then
+            echo "ERROR: it was imposible to guess the year coresponding to the last saved year!"
+            echo "       => check your NEMO output directory and file naming..."; exit 1
+        fi
+        export YEAR_END=$((${YEAR_END}+${IFREQ_SAV_YEARS}-1))
+    fi
+    echo
+    echo " *** Initial year set to ${YEAR_INI}"
+    echo " ***   Last  year set to ${YEAR_END}"
+    echo
+}
+
+function barakuda_init_plot()
+{
+    if [ ! -z ${YEAR0} ]; then
+        echo
+        echo "WARNING: using the -y switch for the creation of the plots (switch -e)"
+        echo "         will have no impact. For the time slice to use, the plots are based"
+        echo "         on what is found in ${DIAG_D}/ !"
+        echo "         => the diagnostic netdcf files"
+        echo "         => which should also be equivalent to what's found in files"
+        echo "            first_year.info and last_year_done.info"
+        echo ""
+        sleep 5
+    fi
+
+    for fc in "first_year" "numb_year_per_file" "last_year_done"; do
+        ff=${DIAG_D}/${fc}.info
+        if [ ! -f ${ff} ]; then echo "ERROR: file ${ff} is missing!"; exit; fi
+    done
+
+    # Only doing plots...
+    export YEAR_INI=`cat ${DIAG_D}/first_year.info`
+    export YEAR_END=`cat ${DIAG_D}/last_year_done.info`
+    export IFREQ_SAV_YEARS=`cat ${DIAG_D}/numb_year_per_file.info`
+
+    echo
+    echo " For time-series to be ploted:"
+    echo "  * initial year = ${YEAR_INI}"
+    echo "  *  last   year = ${YEAR_END}"
+    echo
+}
+
+function barakuda_import_mesh_mask()
+{
+    #script=`basename $0 | sed -e s/'.sh'/''/g` ; # Job managers screw this!!!
+    cd ${TMP_DIR}/
+    # Importing mesh_mask files:
+    check_if_file ${MM_FILE}
+    if [ ! -f ./mesh_mask.nc ]; then
+        if [ "`cext ${MM_FILE}`" = ".gz" ]; then
+            echo "Gunzipping mesh_mask.nc.gz..."
+            cp -L ${MM_FILE} mesh_mask.nc.gz ; gunzip -f mesh_mask.nc.gz
+        else
+            cp -L ${MM_FILE} mesh_mask.nc
+        fi
+    fi
+    #Fix, in case old nemo (prior version 3.6) must rename some metrics param:
+    ca=""; ca=`${NCDUMP} -h mesh_mask.nc  | grep 'e3t('`
+    if [ ! "${ca}" = "" ]; then
+        echo "Renaming some metrics into mesh_mask.nc !!!"
+        ncrename -v e3t_0,e3t_1d -v e3w_0,e3w_1d -v gdept_0,gdept_1d -v gdepw_0,gdepw_1d  mesh_mask.nc
+        ncrename -v e3t,e3t_0 -v e3u,e3u_0 -v e3v,e3v_0 -v e3w,e3w_0                      mesh_mask.nc
+        echo
+    fi
+    check_if_file ${BM_FILE}
+    if [ "`cext ${BM_FILE}`" = ".gz" ]; then
+        cp -L ${BM_FILE} new_maskglo.nc.gz ; gunzip -f new_maskglo.nc.gz
+    else
+        cp -L ${BM_FILE} new_maskglo.nc
+    fi
+    # Setting MM BM files to the imported and unzipped version:
+    export MM_FILE=${TMP_DIR}/mesh_mask.nc
+    export BM_FILE=${TMP_DIR}/new_maskglo.nc
+    echo " *** mesh_mask to be used: ${MM_FILE} "
+    echo " *** basin mask to be used: ${BM_FILE} "
+    echo
+
+    if [ "${script}" = "build_clim" ]; then
+        ln -sf mesh_mask.nc mesh_hgr.nc ; ln -sf mesh_mask.nc mesh_zgr.nc ; ln -sf mesh_mask.nc mask.nc
+    fi
+}
+
+function barakuda_check_year_is_complete()
+{
+    jy1=${jyear} ; jy2=$((${jyear}+${IFREQ_SAV_YEARS}-1))
+    cy1=`printf "%04d" ${jy1}` ; cy2=`printf "%04d" ${jy2}`
+    cy1m=`printf "%04d" $((${jy1}-${IFREQ_SAV_YEARS}))` ; cy2m=`printf "%04d" $((${jy2}-${IFREQ_SAV_YEARS}))`
+    export i_get_file=1
+    echo " *** (${cyear} => from ${cy1} to ${cy2})"
+    export TTAG=${cy1}${cmmdd1}_${cy2}${cmmdd2} # calendar-related part of the file name
+    # Testing if the current year-group has been done
+    for ft in ${NEMO_SAVED_FILES}; do
+        if ${lcontinue}; then
+            ftst=${NEMO_OUT_D}/${cpf}${CPREF}${TTAG}_${ft} ;  cfxt="0"
+            for ca in "nc" "nc.gz" "nc4"; do
+                if [ -f ${ftst}.${ca} ]; then cfxt="${ca}"; fi
+            done
+            if [ ${cfxt} = "0" ]; then
+                echo "Year(s) ${cy1}-${cy2} is not completed yet:"; echo " => ${ftst}(?) is missing"; echo
+                export lcontinue=false
+            fi
+        fi
+    done
+    if ${lcontinue}; then echo " *** All files for ${TTAG} are there!"; fi
+    echo
+}
+
+function barakuda_import_files()
+{
+    # Import command:
+    CIMP="rsync -L"
+    if [ "${CONF}" = "ORCA025.L75" ]; then CIMP="ln -sf" ; fi
+
+    CROUT=${CPREF}${TTAG}
+    
+    # On what file type to test file presence:
+    cgrid_test=`echo ${NEMO_SAVED_FILES} | cut -d ' ' -f2`
+    echo " *** testing on files \"${cgrid_test}\" !"; echo
+    l_happy=false
+    while ! ${l_happy} ; do
+        if [ ${IFREQ_SAV_YEARS} -eq 1 ]; then l_happy=true; fi
+        rm -f *.tmp
+        if [ ${i_get_file} -eq 1 ]; then
+            echo " => gonna get ${CROUT}_* files..."
+            # Importing required files to tmp dir and unzipping:
+            for gt in ${NEMO_SAVED_FILES}; do
+                f2i=${CROUT}_${gt}.nc ;   sgz=""
+                for ca in ".gz" "4"; do
+                    if [ -f ${NEMO_OUT_D}/${cpf}${f2i}${ca} ]; then sgz="${ca}"; fi
+                done
+                check_if_file ${NEMO_OUT_D}/${cpf}${f2i}${sgz}
+                if [ ! -f ./${f2i} ]; then
+                    echo "Importing ${f2i}${sgz} ..."
+                    echo "${CIMP} ${NEMO_OUT_D}/${cpf}${f2i}${sgz} `pwd`/"
+                    ${CIMP} ${NEMO_OUT_D}/${cpf}${f2i}${sgz} ./
+
+                    # temporary fix after NEMO update
+                    case $gt in
+                    icemod )
+                        ##TA ncrename -d .x_grid_T,x -d .y_grid_T,y ${f2i} ;;
+                        ncrename -d .x_grid_T,x ${f2i} 
+                        ncrename -d .y_grid_T,y ${f2i} ;;
+                    grid_T )
+                        ncrename -d .olevel,deptht -v .olevel,deptht ${f2i} ;;
+                    grid_U )
+                        ncrename -d .olevel,depthu -v .olevel,depthu ${f2i} ;;
+                    grid_V )
+                        ncrename -d .olevel,depthv -v .olevel,depthv ${f2i} ;;
+                    SBC )
+                        ncrename -v .friver,runoffs ${f2i} ;;
+                    esac
+
+                    if [ "${sgz}" = ".gz" ]; then gunzip -f ./${f2i}.gz ; fi
+                    if [ "${sgz}" = "4"   ]; then
+                        echo "mv -f ./${f2i}4 ./${f2i}"
+                        mv -f ./${f2i}4 ./${f2i}
+                    fi
+                    check_if_file ${f2i}
+                    echo " ... done!"; echo
+                else
+                    echo " ${f2i}${sgz} was already in `pwd`"
+                fi
+            done
+            # Need to create annual files if more than 1 year in 1 one NEMO file
+            if [ ${IFREQ_SAV_YEARS} -gt 1 ]; then
+                for gt in ${NEMO_SAVED_FILES}; do
+                    ftd=./${CROUT}_${gt}.nc ; # file to divide!
+                    if [ -f ${ftd} ]; then
+                        jy=0
+                        while [ ${jy} -lt ${IFREQ_SAV_YEARS} ]; do
+                            im1=$((${jy}*12+1)) ;  im2=$((${im1}+11))
+                            jytc=$((${jy}+${jy1})) ; cjytc=`printf "%04d" ${jytc}`
+                            ftc="./${CPREF}${cjytc}${cmmdd1}_${cjytc}${cmmdd2}_${gt}.nc" ; # file to create!
+                            if [ ! -f ${ftc} ]; then
+                                echo "Extracting file ${ftc} from ${ftd}, month records: ${im1}=>${im2}"
+                                echo "=> ncks -a -O -F -d time_counter,${im1},${im2} ${ftd} -o ${ftc}"
+                                ncks -a -O -F -d time_counter,${im1},${im2} ${ftd} -o ${ftc}
+                                echo
+                            fi
+                            jy=$((${jy}+1))
+                        done
+                        rm -f ${ftd}
+                    else
+                        echo " ${ftd} is not here!!!"
+                    fi
+                done
+            fi
+        fi
+        # In case the job crashed testing only on ${cgrid_test} file:
+        if [ ${IFREQ_SAV_YEARS} -gt 1 ]; then
+            if [ ! -f ./${CRT1M}_${cgrid_test}.nc ]; then
+                echo "${CRT1M}_${cgrid_test}.nc is missing !!!"
+                jy1=$((${jyear}-${jyear}%${IFREQ_SAV_YEARS})) ; jy2=$((${jy1}+${IFREQ_SAV_YEARS}-1))
+                cy1=`printf "%04d" ${jy1}` ; cy2=`printf "%04d" ${jy2}`; TTAG=${cy1}${cmmdd1}_${cy2}${cmmdd2}
+                CROUT=${CPREF}${TTAG}
+                echo "Should re-import files ${CROUT}* cause something went wrong...."; echo
+                i_get_file=1
+            else
+                l_happy=true
+            fi
+        fi
+    done
+    #
+    # Testing if ALL required files are present now:
+    for gt in ${NEMO_SAVED_FILES}; do
+        ftt="./${CRT1M}_${gt}.nc" ;  check_if_file ${ftt}
+    done
+    echo; echo "All required files are in `pwd` for year ${cyear} !"; echo
+}
+
+
+function build_clim_usage()
+{
+    echo
+    echo "USAGE: ${0} -C <config> -R <experiment> -i <first_year> -e <last_year> (options)"
+    echo
+    echo "     Available configs are:"
+    for cc in ${list_conf}; do
+        echo "         * ${cc}"
+    done
+    echo
+    echo "   OPTIONS:"
+    echo "      -f <years> => how many years per NEMO file? default = 1"
+    echo "      -h         => print this message"
+    echo
+}
+
+
+
+
+
+# ================ Misc. Functions ===============
+
+
+
+# Now a file extension:
+function cext()
+{
+    nbc=`echo ${1} | wc -c`; nbb=`expr ${nbc} - 3`; echo "`echo ${1} | cut -c${nbb}-${nbc}`"
+    # More elegant way would be following but there can be some "." into the ORCA grid...
+    #echo ".`echo $1 | cut -d'.' -f2`
+}
+
+
+
+
+
+lb_is_leap()
+{
+    if [ "$1" = "" ]; then echo "USAGE: lb_is_leap <YEAR>"; exit; fi
+    #
+    i_mod_400=`expr ${1} % 400`
+    i_mod_100=`expr ${1} % 100`
+    i_mod_4=`expr ${1} % 4`
+    #
+    if [ ${i_mod_400} -eq 0 -o ${i_mod_4} -eq 0 -a ! ${i_mod_100} -eq 0 ]; then
+        echo "1"
+    else
+        echo "0"
+    fi
+}
+
+lb_num_leap()
+{
+    #
+    # number of leap years comprised in <YEAR1> (included) and <YEAR2> (excluded)...
+    #
+    if [ "$2" = "" ]; then echo "USAGE: num_leap <YEAR1> <YEAR2>"; exit; fi
+    icpt=0
+    jy=${1}
+    while [ ${jy} -lt ${2} ]; do
+        if [ `lb_is_leap ${jy}` -eq 1 ]; then icpt=`expr ${icpt} + 1`; fi
+        jy=`expr ${jy} + 1`
+    done
+    echo ${icpt}
+}
+
+
+function lb_leap_day()
+{
+    # We need 2 different methods to know the current date:
+    # The input argument is the file date.file
+    #
+    if [ "$1" = "" ]; then echo "USAGE: lb_check_leap <date.file>"; exit; fi
+    DATF=$1
+    #
+    if [ ! -f ${DATF} ]; then echo "There should be a ${DATF} !"; exit; fi
+    #
+    dtg1=`paste ${DATF} | cut -c 11-18`
+    dtg2=`paste ${DATF} | cut -c 20-27`
+    #
+    yyyy=`echo ${dtg2} | cut -c1-4`
+    mmdd1=`echo ${dtg1} | cut -c5-8`
+    mmdd2=`echo ${dtg2} | cut -c5-8`
+    #
+    ileap=`expr ${yyyy} - 2000`; ileap=`expr ${ileap} % 4`
+    #
+    # Last DTG done:
+    export CLDTG=${dtg2}
+    #
+    #if [ ! ${ileap} -eq 0 ]; then echo "Not a leap year !"; fi
+    #
+    #
+    # We were at a DTBR=
+    # a regular year would make a 19900225_19900229 file
+    #  (should be 19900225_19900301 actually but NEMO seems to keep the same month for a file name!)
+    # so when we restart an experiment for a leap year and the last dtg was "19900220_19900224", we force
+    # DTBR=6 !
+    #
+    export i_leap_day=0
+    #
+    if [ ${ileap} -eq 0 -a "${mmdd2}" = "0224" ]; then
+        #
+        # Checking if the frequency was 5 days:
+        if [ ! "${mmdd1}" = "0220" ]; then echo "Problem (lb_leap_day), expecting different DTG"; exit; fi
+        #
+        export i_leap_day=1
+    fi
+    #
+}
+
+
+function clock2hour()
+{
+    # convert time like hh:mm:ss
+    # to decimal hour of the day
+    # ex: 13:30:00  => 13.5
+    #
+    # Replacing ":" by " ":
+    ca=`echo $1 | sed -e s/:/' '/g`
+    #
+    hdec=`echo ${ca} | awk '{print $1+($2*60+$3)/3600}'`
+    echo ${hdec}
+}
+
+
+
+check_if_file()
+{
+    lspeak=true
+    cmesg="$2"
+    if [ "$2" = "s" ]; then
+        # Silent!
+        lspeak=false
+        cmesg="$3"
+    fi
+    if [ ! -f $1 ]; then
+        echo; echo "PROBLEM: file $1 is missing!!!"; echo "${cmesg}"
+        exit
+    else
+        if ${lspeak}; then echo " ... good, file $1 is here..."; echo; fi
+    fi
+}
+
+
+
+
+set_xtics()
+{
+    if [ "${1}" = "" ]; then echo "ERROR (xtics.sh): YEAR_INI is not defined!!!"; exit; fi
+    if [ "${2}" = "" ]; then echo "ERROR (xtics.sh): YEAR_END is not defined!!!"; exit; fi
+    #
+    dy=`expr ${2} - ${1} + 1` ; export YF2=`expr ${2} + 1`
+    #
+    export XTICS=1
+    if [ ${dy} -gt 14   -a ${dy} -le 30   ]; then export XTICS=2; fi
+    if [ ${dy} -gt 30   -a ${dy} -le 120  ]; then export XTICS=5; fi
+    if [ ${dy} -gt 120  -a ${dy} -le 200  ]; then export XTICS=10; fi
+    if [ ${dy} -gt 200  -a ${dy} -le 400  ]; then export XTICS=20; fi
+    if [ ${dy} -gt 400  -a ${dy} -le 1200 ]; then export XTICS=50; fi
+    if [ ${dy} -gt 1200                   ]; then export XTICS=100; fi
+}
+
+
+
+
+epstopng()
+{
+    #
+    CMD="convert -density 120x120 -quality 100" ; # Transparent background
+    #CMD="convert -density 120x120 -quality 100 -background white -flatten" ; # White background :
+    #
+    if [ "$1" = "" ]; then
+        list=`\ls *.eps`
+    else
+        list="$1"
+    fi
+    #
+    if [ "`which convert`" = "" ]; then
+        echo; echo "PROBLEM: convert from ImageMagick was not found in your PATH..."
+        echo; exit
+    fi
+    #
+    for feps in $list; do
+        fpng=`echo ${feps} | sed -e s/'\.eps'/'\.png'/g`
+        if [ ! -f ${fpng} ]; then
+            echo "Creating ${fpng}"
+            ${CMD} ${feps} ${fpng}
+        else
+            echo "${fpng} already exists!"
+        fi
+    done
+    #
+}
+
+
+
+ipresent_var_in_ncf()
+{
+    ipv=0
+    ca=`${NCDUMP} -h $1 | grep "${2}(time_counter" | grep float`
+    if [ ! "${ca}" = "" ]; then
+        #echo "   variable ${2} is present in file $1"
+        ipv=1
+        #else
+        #    echo "   variable ${2} is NOT present in file $1"
+    fi
+    echo "${ipv}"
+}
+
+
+
+function contains_string()
+{
+    # Tells if string "s" (argument 1) belongs to a list (argument 2)
+
+    nbarg="$#" ; length_list=`expr ${nbarg} - 1`
+    list_all=($*)
+
+    s=${list_all[0]}  ; # the string
+    list=${list_all[@]:1:${length_list}}  ; # the list
+
+    #echo "the string = ${s}"
+    #echo "the list   = ${list_all[@]:1:${length_list}}"
+
+    [[ ${list} =~ ${s} ]] && echo "1" || echo "0"
+
+}
+
+
+sign_image()
+{
+    w_logo_desired=40 ; h_logo_desired=33 ; #h_logo_desired doesn't seem to matter!    
+    flogo=${BARAKUDA_ROOT}/src/html/logo.png
+    rw=`identify -format "%w" ${1}` ; #   rh=`identify -format "%h" ${1}`
+    rpx=$((${rw}-${w_logo_desired}))
+    composite -geometry ${w_logo_desired}x${h_logo_desired}+${rpx}+0 ${flogo} ${1} ${2}
+}
