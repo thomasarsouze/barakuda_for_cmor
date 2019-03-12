@@ -37,6 +37,7 @@ HPCARCH=moore
 ORCA_CONF=ORCA1L75
 ORCA_CONF=${ORCA_CONF/L/_L}
 INSTITUTION=EC-Earth-Consortium
+export MIP=OMIP
 export MODEL_ID=EC-Earth3-LR
 export MEMBER=r2i1p1f1
 export EXPERIMENT=piControl
@@ -70,6 +71,7 @@ barakudadiresc=$(echo ${barakudadir} | sed 's_/_\\/_g')
 sed -e "s/_ORCA_CONF_/${ORCA_CONF}/" \
     -e "s/_EXPID_/${EXPID}/" \
     -e "s/_RES_/${RES}/" \
+    -e "s/_MIP_/${MIP}/" \
     -e "s/_INSTITUTION_/${INSTITUTION}/" \
     -e "s/_EXPERIMENT_/${EXPERIMENT}/" \
     -e "s/_MODEL_ID_/${MODEL_ID}/" \

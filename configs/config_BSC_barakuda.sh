@@ -22,7 +22,7 @@ export EXTRA_CONF="NEMO 3.6 + LIM 3 (EC-Earth 3.2)" ;   #  proj model+version
 
 # Path / directory structure in which to find NEMO output file (you can use
 # <ORCA> and <EXP> as substitute to your ORCA grid and experiment (EXP) name):
-export NEMO_OUT_STRCT="/esarchive/exp/ecearth/_EXPID_/cmorfiles/CMIP/_INSTITUTION_/_MODEL_ID_/_EXPERIMENT_/_MEMBER_/"
+export NEMO_OUT_STRCT="/esarchive/exp/ecearth/_EXPID_/cmorfiles/_MIP_/_INSTITUTION_/_MODEL_ID_/_EXPERIMENT_/_MEMBER_/"
 
 # Path to root directory where to save the diagnostics (diagnostics for this "CONF"):
 export DIAG_DIR="/scratch/Earth/barakuda/_EXPID_/_MEMBER_"  # create barakuda common file
