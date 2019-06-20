@@ -15,7 +15,6 @@
 #SBATCH -o /home/Earth/tarsouze/Documents/barakuda/a1om_BARAKUDA.%J.out
 #SBATCH -e /home/Earth/tarsouze/Documents/barakuda/a1om_BARAKUDA.%J.err
 #SBATCH --nodes=1-1
-#SBATCH -w gustafson
 #
 ###############################################################################
 ###################

@@ -25,13 +25,13 @@ export EXTRA_CONF="NEMO 3.6 + LIM 3 (EC-Earth 3.2)" ;   #  proj model+version
 export NEMO_OUT_STRCT="/esarchive/exp/ecearth/_EXPID_/cmorfiles/_MIP_/_INSTITUTION_/_MODEL_ID_/_EXPERIMENT_/_MEMBER_/"
 
 # Path to root directory where to save the diagnostics (diagnostics for this "CONF"):
-export DIAG_DIR="/scratch/Earth/barakuda/_EXPID_/_MEMBER_"  # create barakuda common file
+export DIAG_DIR="/esarchive/scratch/Earth/barakuda/_EXPID_/_MEMBER_"  # create barakuda common file
 
 # Path to directory containing some 2D and 3D climatologies on the relevant ORCA grid:
 export CONF_INI_DIR="/esarchive/obs/barakuda/_ORCA_CONF__barakuda"
 
 # Temporary file system (scratch) on which to perform the job you can use <JOB_ID> if scracth depends on JOB ID:
-export SCRATCH="/scratch/Earth/${USER}"
+export SCRATCH="/esarchive/scratch/Earth/${USER}"
 
 export PYTHON_HOME="/home/Earth/lbrodeau/opt/Canopy/User" ; # ????????????????????
 
